@@ -1,0 +1,233 @@
+// Prisma Schema for VEO3 AI Backend
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== ENUMS ====================
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum ContactMethod {
+  EMAIL
+  TELEGRAM
+  ZALO
+}
+
+enum PaymentMethod {
+  VND_BANK_TRANSFER
+  USDT
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  REJECTED
+  EXPIRED
+}
+
+enum LicenseStatus {
+  UNUSED
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+// ==================== MODELS ====================
+
+model User {
+  id                     String        @id @default(uuid())
+  email                  String        @unique
+  password               String
+  name                   String
+  phone                  String?
+  avatar                 String?
+  role                   Role          @default(USER)
+  telegramContact        String?
+  zaloContact            String?
+  preferredContactMethod ContactMethod @default(EMAIL)
+  currentSessionId       String?
+  isEmailVerified        Boolean       @default(false)
+  emailVerifyToken       String?
+  passwordResetToken     String?
+  passwordResetExpires   DateTime?
+  lastLoginAt            DateTime?
+  lastLoginIp            String?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  orders           Order[]        @relation("UserOrders")
+  licenses         License[]      @relation("UserLicenses")
+  sessions         Session[]
+  approvedOrders   Order[]        @relation("ApprovedOrders")
+  rejectedOrders   Order[]        @relation("RejectedOrders")
+  createdLicenses  License[]      @relation("CreatedLicenses")
+  activityLogs     ActivityLog[]
+
+  @@index([email])
+}
+
+model Package {
+  id              String    @id @default(uuid())
+  name            String
+  slug            String    @unique
+  description     String?
+  durationMonths  Int
+  originalPrice   Decimal   @db.Decimal(15, 2)
+  salePrice       Decimal   @db.Decimal(15, 2)
+  discountPercent Int       @default(0)
+  features        Json      @default("[]")
+  videosPerMonth  Int       @default(0)
+  keywordsTracking Int      @default(0)
+  apiCallsPerMonth Int      @default(0)
+  maxDevices      Int       @default(1)
+  isPopular       Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  sortOrder       Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  orders   Order[]
+  licenses License[]
+
+  @@index([slug])
+  @@index([isActive])
+}
+
+model Order {
+  id               String        @id @default(uuid())
+  orderNumber      String        @unique
+  userId           String
+  packageId        String
+  amount           Decimal       @db.Decimal(15, 2)
+  currency         String        @default("VND")
+  paymentMethod    PaymentMethod @default(VND_BANK_TRANSFER)
+  transferContent  String        @unique
+  status           OrderStatus   @default(PENDING)
+  userConfirmedAt  DateTime?
+  approvedAt       DateTime?
+  approvedById     String?
+  rejectedAt       DateTime?
+  rejectedById     String?
+  rejectionReason  String?
+  licenseId        String?       @unique
+  deliveryMethod   ContactMethod?
+  deliveryContact  String?
+  deliveredAt      DateTime?
+  adminNotes       String?
+  expiresAt        DateTime
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  user       User     @relation("UserOrders", fields: [userId], references: [id])
+  package    Package  @relation(fields: [packageId], references: [id])
+  approvedBy User?    @relation("ApprovedOrders", fields: [approvedById], references: [id])
+  rejectedBy User?    @relation("RejectedOrders", fields: [rejectedById], references: [id])
+  license    License? @relation(fields: [licenseId], references: [id])
+
+  @@index([orderNumber])
+  @@index([transferContent])
+  @@index([status])
+  @@index([userId])
+}
+
+model License {
+  id              String        @id @default(uuid())
+  licenseKey      String        @unique
+  userId          String
+  orderId         String        @unique
+  packageId       String
+  startDate       DateTime
+  endDate         DateTime
+  durationMonths  Int
+  status          LicenseStatus @default(UNUSED)
+  maxDevices      Int           @default(1)
+  appDownloadLink String?
+  appVersion      String?
+  createdById     String
+  activatedAt     DateTime?
+  revokedAt       DateTime?
+  revokedReason   String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user         User            @relation("UserLicenses", fields: [userId], references: [id])
+  order        Order?
+  package      Package         @relation(fields: [packageId], references: [id])
+  createdBy    User            @relation("CreatedLicenses", fields: [createdById], references: [id])
+  devices      LicenseDevice[]
+  activityLogs ActivityLog[]
+
+  @@index([licenseKey])
+  @@index([status])
+  @@index([userId])
+}
+
+model LicenseDevice {
+  id                 String    @id @default(uuid())
+  licenseId          String
+  hardwareId         String
+  deviceName         String
+  deviceOS           String
+  ipAddress          String?
+  isActive           Boolean   @default(true)
+  activatedAt        DateTime  @default(now())
+  lastLoginAt        DateTime?
+  deactivatedAt      DateTime?
+  deactivatedReason  String?
+
+  license License @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+
+  @@unique([licenseId, hardwareId])
+  @@index([licenseId])
+  @@index([hardwareId])
+}
+
+model Session {
+  id             String   @id @default(uuid())
+  sessionId      String   @unique
+  userId         String
+  browser        String?
+  os             String?
+  deviceType     String?
+  ipAddress      String?
+  userAgent      String?
+  isActive       Boolean  @default(true)
+  lastActivityAt DateTime @default(now())
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model ActivityLog {
+  id           String   @id @default(uuid())
+  userId       String
+  licenseId    String?
+  actionType   String
+  actionDetail Json?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  license License? @relation(fields: [licenseId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([licenseId])
+  @@index([createdAt])
+  @@index([actionType])
+}
