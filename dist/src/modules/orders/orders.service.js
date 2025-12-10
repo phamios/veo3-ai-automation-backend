@@ -12,12 +12,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.OrdersService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../../prisma/prisma.service");
+const telegram_service_1 = require("../notifications/telegram.service");
 const error_codes_1 = require("../../common/constants/error-codes");
 const utils_1 = require("../../utils");
 let OrdersService = class OrdersService {
     prisma;
-    constructor(prisma) {
+    telegramService;
+    constructor(prisma, telegramService) {
         this.prisma = prisma;
+        this.telegramService = telegramService;
     }
     async create(userId, dto) {
         const pkg = await this.prisma.package.findUnique({
@@ -159,6 +162,16 @@ let OrdersService = class OrdersService {
                 },
             },
         });
+        await this.telegramService.sendNewOrderNotification({
+            orderId: updatedOrder.id,
+            orderNumber: updatedOrder.orderNumber,
+            userName: updatedOrder.user?.name || 'Unknown',
+            userEmail: updatedOrder.user?.email || 'Unknown',
+            packageName: updatedOrder.package?.name || 'Unknown',
+            amount: Number(updatedOrder.amount),
+            transferContent: updatedOrder.transferContent,
+            createdAt: updatedOrder.createdAt,
+        });
         return updatedOrder;
     }
     async getStatus(userId, orderId) {
@@ -203,6 +216,7 @@ let OrdersService = class OrdersService {
 exports.OrdersService = OrdersService;
 exports.OrdersService = OrdersService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        telegram_service_1.TelegramService])
 ], OrdersService);
 //# sourceMappingURL=orders.service.js.map

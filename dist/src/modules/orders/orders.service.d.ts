@@ -1,8 +1,10 @@
 import { PrismaService } from '../../prisma/prisma.service';
+import { TelegramService } from '../notifications/telegram.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 export declare class OrdersService {
     private prisma;
-    constructor(prisma: PrismaService);
+    private telegramService;
+    constructor(prisma: PrismaService, telegramService: TelegramService);
     create(userId: string, dto: CreateOrderDto): Promise<{
         order: {
             package: {

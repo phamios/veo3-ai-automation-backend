@@ -107,6 +107,9 @@ let UsersService = class UsersService {
                     package: {
                         select: { name: true, durationMonths: true },
                     },
+                    license: {
+                        select: { licenseKey: true, status: true, endDate: true },
+                    },
                 },
                 orderBy: { createdAt: 'desc' },
                 skip,

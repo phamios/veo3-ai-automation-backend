@@ -1,9 +1,20 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import TelegramBot from 'node-telegram-bot-api';
+import { PrismaService } from '../../prisma/prisma.service';
+import { LicensesService } from '../licenses/licenses.service';
+import { EmailService } from './email.service';
 
 interface OrderInfo {
   orderNumber: string;
+  orderId: string;
   userName: string;
   userEmail: string;
   packageName: string;
@@ -13,12 +24,19 @@ interface OrderInfo {
 }
 
 @Injectable()
-export class TelegramService implements OnModuleInit {
+export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private bot: TelegramBot | null = null;
   private adminChatId: string;
   private readonly logger = new Logger(TelegramService.name);
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private prisma: PrismaService,
+    @Inject(forwardRef(() => LicensesService))
+    private licensesService: LicensesService,
+    @Inject(forwardRef(() => EmailService))
+    private emailService: EmailService,
+  ) {
     this.adminChatId = this.configService.get<string>(
       'TELEGRAM_ADMIN_CHAT_ID',
       '',
@@ -29,14 +47,208 @@ export class TelegramService implements OnModuleInit {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
     if (token && token !== 'your-telegram-bot-token') {
       try {
-        this.bot = new TelegramBot(token, { polling: false });
-        this.logger.log('Telegram bot initialized');
+        // Enable polling to receive callback queries
+        this.bot = new TelegramBot(token, { polling: true });
+        this.logger.log('Telegram bot initialized with polling');
+
+        // Setup callback query handler
+        this.setupCallbackHandler();
       } catch (error) {
         this.logger.warn('Failed to initialize Telegram bot:', error);
       }
     } else {
       this.logger.warn('Telegram bot token not configured');
     }
+  }
+
+  onModuleDestroy() {
+    if (this.bot) {
+      this.bot.stopPolling();
+      this.logger.log('Telegram bot polling stopped');
+    }
+  }
+
+  private setupCallbackHandler() {
+    if (!this.bot) return;
+
+    this.bot.on('callback_query', async (query) => {
+      if (!query.data || !query.message) return;
+
+      const chatId = query.message.chat.id;
+      const messageId = query.message.message_id;
+      const [action, orderId] = query.data.split('_');
+
+      this.logger.log(`Received callback: ${action} for order ${orderId}`);
+
+      try {
+        if (action === 'approve') {
+          await this.handleApprove(orderId, chatId, messageId, query.from?.username || 'Admin');
+        } else if (action === 'reject') {
+          await this.handleReject(orderId, chatId, messageId, query.from?.username || 'Admin');
+        }
+
+        // Answer callback to remove loading state
+        await this.bot?.answerCallbackQuery(query.id);
+      } catch (error) {
+        this.logger.error(`Error handling callback: ${error}`);
+        await this.bot?.answerCallbackQuery(query.id, {
+          text: `Lỗi: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          show_alert: true,
+        });
+      }
+    });
+  }
+
+  private async handleApprove(
+    orderId: string,
+    chatId: number,
+    messageId: number,
+    approvedBy: string,
+  ) {
+    // Get order with details
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        user: true,
+        package: true,
+      },
+    });
+
+    if (!order) {
+      throw new Error('Không tìm thấy đơn hàng');
+    }
+
+    if (order.status !== 'PROCESSING') {
+      throw new Error(`Đơn hàng đang ở trạng thái: ${order.status}`);
+    }
+
+    // Get admin user (first admin in system for now)
+    const adminUser = await this.prisma.user.findFirst({
+      where: { role: 'ADMIN' },
+    });
+
+    if (!adminUser) {
+      throw new Error('Không tìm thấy admin');
+    }
+
+    // Create license and update order
+    const result = await this.prisma.$transaction(async (tx) => {
+      // Generate license
+      const license = await this.licensesService.create(
+        {
+          userId: order.userId,
+          orderId: order.id,
+          packageId: order.packageId,
+          maxDevices: order.package.maxDevices,
+        },
+        adminUser.id,
+      );
+
+      // Update order
+      const updatedOrder = await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: 'COMPLETED',
+          approvedAt: new Date(),
+          approvedById: adminUser.id,
+          licenseId: license.id,
+          deliveryMethod: 'EMAIL',
+          deliveryContact: order.user.email,
+          deliveredAt: new Date(),
+          adminNotes: `Approved via Telegram by @${approvedBy}`,
+        },
+      });
+
+      return { order: updatedOrder, license };
+    });
+
+    // Send email with license
+    await this.emailService.sendLicenseEmail({
+      to: order.user.email,
+      userName: order.user.name,
+      licenseKey: result.license.licenseKey,
+      packageName: order.package.name,
+      expiryDate: result.license.endDate,
+    });
+
+    // Update Telegram message
+    const successMessage = `
+✅ <b>Đã duyệt đơn hàng!</b>
+
+📋 <b>Mã đơn:</b> ${order.orderNumber}
+👤 <b>Khách hàng:</b> ${order.user.name}
+📧 <b>Email:</b> ${order.user.email}
+📦 <b>Gói:</b> ${order.package.name}
+🔑 <b>License Key:</b> <code>${result.license.licenseKey}</code>
+📅 <b>Hết hạn:</b> ${result.license.endDate.toLocaleDateString('vi-VN')}
+👨‍💼 <b>Duyệt bởi:</b> @${approvedBy}
+⏰ <b>Thời gian:</b> ${new Date().toLocaleString('vi-VN')}
+    `.trim();
+
+    await this.bot?.editMessageText(successMessage, {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'HTML',
+    });
+  }
+
+  private async handleReject(
+    orderId: string,
+    chatId: number,
+    messageId: number,
+    rejectedBy: string,
+  ) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { user: true, package: true },
+    });
+
+    if (!order) {
+      throw new Error('Không tìm thấy đơn hàng');
+    }
+
+    if (order.status !== 'PROCESSING') {
+      throw new Error(`Đơn hàng đang ở trạng thái: ${order.status}`);
+    }
+
+    // Get admin user
+    const adminUser = await this.prisma.user.findFirst({
+      where: { role: 'ADMIN' },
+    });
+
+    if (!adminUser) {
+      throw new Error('Không tìm thấy admin');
+    }
+
+    // Update order status
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data: {
+        status: 'REJECTED',
+        rejectedAt: new Date(),
+        rejectedById: adminUser.id,
+        rejectionReason: `Rejected via Telegram by @${rejectedBy}`,
+      },
+    });
+
+    // Update Telegram message
+    const rejectMessage = `
+❌ <b>Đã từ chối đơn hàng!</b>
+
+📋 <b>Mã đơn:</b> ${order.orderNumber}
+👤 <b>Khách hàng:</b> ${order.user.name}
+📧 <b>Email:</b> ${order.user.email}
+📦 <b>Gói:</b> ${order.package.name}
+💰 <b>Số tiền:</b> ${Number(order.amount).toLocaleString('vi-VN')} VND
+👨‍💼 <b>Từ chối bởi:</b> @${rejectedBy}
+⏰ <b>Thời gian:</b> ${new Date().toLocaleString('vi-VN')}
+    `.trim();
+
+    await this.bot?.editMessageText(rejectMessage, {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'HTML',
+    });
   }
 
   private async sendMessage(
@@ -62,31 +274,31 @@ export class TelegramService implements OnModuleInit {
   }
 
   async sendNewOrderNotification(order: OrderInfo): Promise<boolean> {
-    const adminUrl = this.configService.get<string>('ADMIN_URL');
     const message = `
-🛒 <b>New Order Received!</b>
+🛒 <b>Đơn hàng mới!</b>
 
-📋 <b>Order:</b> ${order.orderNumber}
-👤 <b>Customer:</b> ${order.userName}
+📋 <b>Mã đơn:</b> ${order.orderNumber}
+👤 <b>Khách hàng:</b> ${order.userName}
 📧 <b>Email:</b> ${order.userEmail}
-📦 <b>Package:</b> ${order.packageName}
-💰 <b>Amount:</b> ${order.amount.toLocaleString()} VND
-🏦 <b>Transfer Code:</b> <code>${order.transferContent}</code>
-📅 <b>Time:</b> ${order.createdAt.toLocaleString()}
+📦 <b>Gói:</b> ${order.packageName}
+💰 <b>Số tiền:</b> ${order.amount.toLocaleString('vi-VN')} VND
+🏦 <b>Nội dung CK:</b> <code>${order.transferContent}</code>
+📅 <b>Thời gian:</b> ${order.createdAt.toLocaleString('vi-VN')}
 
-⏳ Waiting for payment confirmation...
+⏳ Chờ xác nhận thanh toán...
     `.trim();
 
+    // Use callback_data for buttons (works without public URL)
     const inlineKeyboard: TelegramBot.InlineKeyboardMarkup = {
       inline_keyboard: [
         [
           {
-            text: '✅ Approve',
-            url: `${adminUrl}/orders/${order.orderNumber}/approve`,
+            text: '✅ Duyệt đơn',
+            callback_data: `approve_${order.orderId}`,
           },
           {
-            text: '❌ Reject',
-            url: `${adminUrl}/orders/${order.orderNumber}/reject`,
+            text: '❌ Từ chối',
+            callback_data: `reject_${order.orderId}`,
           },
         ],
       ],
@@ -104,13 +316,13 @@ export class TelegramService implements OnModuleInit {
     approvedBy: string;
   }): Promise<boolean> {
     const message = `
-✅ <b>Order Approved</b>
+✅ <b>Đơn hàng đã duyệt</b>
 
-📋 <b>Order:</b> ${params.orderNumber}
-👤 <b>Customer:</b> ${params.userName}
+📋 <b>Mã đơn:</b> ${params.orderNumber}
+👤 <b>Khách hàng:</b> ${params.userName}
 🔑 <b>License:</b> <code>${params.licenseKey}</code>
-👨‍💼 <b>Approved by:</b> ${params.approvedBy}
-📅 <b>Time:</b> ${new Date().toLocaleString()}
+👨‍💼 <b>Duyệt bởi:</b> ${params.approvedBy}
+📅 <b>Thời gian:</b> ${new Date().toLocaleString('vi-VN')}
     `.trim();
 
     return this.sendMessage(this.adminChatId, message);
@@ -123,13 +335,13 @@ export class TelegramService implements OnModuleInit {
     rejectedBy: string;
   }): Promise<boolean> {
     const message = `
-❌ <b>Order Rejected</b>
+❌ <b>Đơn hàng đã từ chối</b>
 
-📋 <b>Order:</b> ${params.orderNumber}
-👤 <b>Customer:</b> ${params.userName}
-📝 <b>Reason:</b> ${params.reason}
-👨‍💼 <b>Rejected by:</b> ${params.rejectedBy}
-📅 <b>Time:</b> ${new Date().toLocaleString()}
+📋 <b>Mã đơn:</b> ${params.orderNumber}
+👤 <b>Khách hàng:</b> ${params.userName}
+📝 <b>Lý do:</b> ${params.reason}
+👨‍💼 <b>Từ chối bởi:</b> ${params.rejectedBy}
+📅 <b>Thời gian:</b> ${new Date().toLocaleString('vi-VN')}
     `.trim();
 
     return this.sendMessage(this.adminChatId, message);

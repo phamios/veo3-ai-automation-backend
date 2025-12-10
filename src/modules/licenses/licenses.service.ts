@@ -54,6 +54,8 @@ export class LicensesService {
         startDate,
         endDate,
         durationMonths: pkg.durationMonths,
+        status: 'ACTIVE',
+        activatedAt: new Date(),
         maxDevices: dto.maxDevices || pkg.maxDevices,
         appDownloadLink: dto.appDownloadLink,
         appVersion: dto.appVersion,

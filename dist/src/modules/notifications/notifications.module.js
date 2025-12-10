@@ -10,12 +10,14 @@ exports.NotificationsModule = void 0;
 const common_1 = require("@nestjs/common");
 const email_service_1 = require("./email.service");
 const telegram_service_1 = require("./telegram.service");
+const licenses_module_1 = require("../licenses/licenses.module");
 let NotificationsModule = class NotificationsModule {
 };
 exports.NotificationsModule = NotificationsModule;
 exports.NotificationsModule = NotificationsModule = __decorate([
     (0, common_1.Global)(),
     (0, common_1.Module)({
+        imports: [(0, common_1.forwardRef)(() => licenses_module_1.LicensesModule)],
         providers: [email_service_1.EmailService, telegram_service_1.TelegramService],
         exports: [email_service_1.EmailService, telegram_service_1.TelegramService],
     })

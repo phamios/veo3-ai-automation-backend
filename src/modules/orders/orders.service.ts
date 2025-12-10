@@ -5,13 +5,17 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TelegramService } from '../notifications/telegram.service';
 import { ErrorCodes } from '../../common/constants/error-codes';
 import { generateOrderNumber, generateTransferContent } from '../../utils';
 import { CreateOrderDto } from './dto/create-order.dto';
 
 @Injectable()
 export class OrdersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private telegramService: TelegramService,
+  ) {}
 
   async create(userId: string, dto: CreateOrderDto) {
     // Check if package exists and is active
@@ -176,7 +180,17 @@ export class OrdersService {
       },
     });
 
-    // TODO: Send Telegram notification to admin via TelegramService
+    // Send Telegram notification to admin
+    await this.telegramService.sendNewOrderNotification({
+      orderId: updatedOrder.id,
+      orderNumber: updatedOrder.orderNumber,
+      userName: updatedOrder.user?.name || 'Unknown',
+      userEmail: updatedOrder.user?.email || 'Unknown',
+      packageName: updatedOrder.package?.name || 'Unknown',
+      amount: Number(updatedOrder.amount),
+      transferContent: updatedOrder.transferContent,
+      createdAt: updatedOrder.createdAt,
+    });
 
     return updatedOrder;
   }

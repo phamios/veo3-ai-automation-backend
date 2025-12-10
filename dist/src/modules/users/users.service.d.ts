@@ -54,6 +54,11 @@ export declare class UsersService {
                 name: string;
                 durationMonths: number;
             };
+            license: {
+                licenseKey: string;
+                endDate: Date;
+                status: import("@prisma/client").$Enums.LicenseStatus;
+            } | null;
         } & {
             id: string;
             createdAt: Date;
