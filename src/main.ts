@@ -22,11 +22,17 @@ async function bootstrap() {
   );
 
   // CORS configuration
+  const allowedOrigins = [
+    configService.get<string>('FRONTEND_URL', 'http://localhost:3000'),
+    configService.get<string>('ADMIN_URL', 'http://localhost:3000'),
+    // Production domains
+    'https://veo3.up.railway.app',
+    'https://mmo4me.io',
+    'https://www.mmo4me.io',
+  ].filter(Boolean);
+
   app.enableCors({
-    origin: [
-      configService.get<string>('FRONTEND_URL', 'http://localhost:3000'),
-      configService.get<string>('ADMIN_URL', 'http://localhost:3000'),
-    ],
+    origin: allowedOrigins,
     credentials: true,
   });
 
