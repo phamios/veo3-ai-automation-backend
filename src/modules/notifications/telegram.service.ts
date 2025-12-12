@@ -51,6 +51,18 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         this.bot = new TelegramBot(token, { polling: true });
         this.logger.log('Telegram bot initialized with polling');
 
+        // Handle polling errors (e.g., conflict with another instance)
+        this.bot.on('polling_error', (error: Error & { code?: string }) => {
+          if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
+            this.logger.warn(
+              'Telegram polling conflict detected - another bot instance may be running. Stopping polling.',
+            );
+            this.bot?.stopPolling();
+          } else {
+            this.logger.error('Telegram polling error:', error.message);
+          }
+        });
+
         // Setup callback query handler
         this.setupCallbackHandler();
       } catch (error) {
